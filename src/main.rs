@@ -2,7 +2,7 @@ use std::error::Error;
 use std::sync::Arc;
 use Embeddings::*;
 use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
+use tokio::net::{TcpListener, TcpStream};
 use std::thread::sleep;
 use std::time::Duration;
 use serde_json::{from_str, json};
@@ -23,8 +23,8 @@ impl Address {
         }
     }
 
-    fn listener(&self) -> Result<TcpListener, Box<dyn Error>> {
-        match TcpListener::bind(format!("{}:{}", self.ip, self.port)) {
+    async fn listener(&self) -> Result<TcpListener, Box<dyn Error>> {
+        match TcpListener::bind(format!("{}:{}", self.ip, self.port)).await {
             Ok(listener) => Ok(listener),
             Err(e) => {
                 Err(Box::new(e))
@@ -36,7 +36,7 @@ impl Address {
 
 pub async fn handle_client(mut stream: TcpStream, embeddings: Arc<Embedding>) {
     let mut buffer = [0; 512];
-    match stream.read(&mut buffer) {
+    match stream.try_read(&mut buffer) {
         Ok(bytes_read) => {
             let mut string = String::from_utf8(buffer[..bytes_read].to_vec()).unwrap();
             println!("{}", string);
@@ -52,7 +52,7 @@ pub async fn handle_client(mut stream: TcpStream, embeddings: Arc<Embedding>) {
             let vec: Vec<f32> = from_str(&*result).unwrap();
             println!("{:?}", vec);
 
-            stream.write_all(result.as_bytes()).unwrap();
+            stream.try_write(result.as_bytes()).unwrap();
         },
         Err(e) => {
             eprintln!("Error: {}", e);
@@ -80,7 +80,7 @@ async fn main() {
     // start server
     let address = Address::new(7878, "127.0.0.1".to_string());
 
-    let listener = address.listener().unwrap();
+    let listener = address.listener().await.unwrap();
     let mut buffer = [0; 512];
 
     tokio::spawn({
@@ -90,43 +90,41 @@ async fn main() {
             loop {
                 let mut task_list_clone = task_list.lock().await;
                 if !task_list_clone.is_empty() {
+//                    std::mem::drop(task_list_clone);
                     println!("Doing command {:?}", task_list_clone.pop_front().unwrap());
                 } else {
                     std::mem::drop(task_list_clone);
                     println!("There are no tasks aviable at the moment");
-                    tokio::time::sleep(Duration::from_secs(5)).await;
+                    tokio::time::sleep(Duration::from_secs(3)).await;
                 }
             }
         }
     });
 
-    for stream in listener.incoming() {
-        match stream {
-            Ok (mut stream) => {
-                println!("Connection started");
-
-                match stream.read(&mut buffer) {
-                    Ok(buffer_size) => {
-
-                        println!("{}", String::from_utf8(buffer[..buffer_size].to_vec()).unwrap());
-                        let command: Command = serde_json::from_slice(&buffer[..buffer_size].to_vec()).unwrap();
-
-                        let mut task_list_clone = task_list.clone();
-                        let mut task_list_clone = task_list_clone.lock().await;
-                        task_list_clone.push_back(command);
-
-                    }
-                    Err(_) => {
-                        println!("Error while deserealisation!!!!")
-                    }
-                }
-
+    loop {
+        let (stream, _) =  listener.accept().await.unwrap();
+        println!("Connection started");
+        stream.readable().await.unwrap();
+        match stream.try_read(&mut buffer) {
+            Ok(0) => {
+                println!("There is no data to read!!!");
             }
-            Err(e) => {
-                eprintln!("Error: {}", e);
+            Ok(buffer_size) => {
+
+                //println!("{}", String::from_utf8(buffer[..buffer_size].to_vec()).unwrap());
+                let command: Command = serde_json::from_slice(&buffer[..buffer_size].to_vec()).unwrap();
+
+                let mut task_list_clone = task_list.clone();
+                let mut task_list_clone = task_list_clone.lock().await;
+                task_list_clone.push_back(command);
+                println!("Added");
+            }
+            Err(_) => {
+                println!("Error while reading!!!!")
             }
         }
     }
+
 
     todo!("Block threads, after finishing")
 }
