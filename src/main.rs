@@ -1,14 +1,15 @@
 use std::error::Error;
 use std::sync::Arc;
 use Embeddings::*;
-use std::io::{Read, Write};
+use std::io::{ErrorKind, Read, Write};
 use tokio::net::{TcpListener, TcpStream};
-use std::thread::sleep;
-use std::time::Duration;
-use serde_json::{from_str, json};
+use serde_json::{from_str, json, Value};
 use std::collections::VecDeque;
+use std::convert::Infallible;
+use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
+use AzureApi::{MyRequest, MyResponse};
 
 struct Address {
     ip: String,
@@ -34,32 +35,11 @@ impl Address {
 }
 
 
-pub async fn handle_client(mut stream: TcpStream, embeddings: Arc<Embedding>) {
-    let mut buffer = [0; 512];
-    match stream.try_read(&mut buffer) {
-        Ok(bytes_read) => {
-            let mut string = String::from_utf8(buffer[..bytes_read].to_vec()).unwrap();
-            println!("{}", string);
-            if string == "hello" {
-                println!("Wait 10 sec");
-                sleep(Duration::from_secs(10));
-            }
-            let satart = std::time::Instant::now();
-            let vector = embeddings.average_vector(string.as_str());
-            println!("{}", satart.elapsed().as_secs_f32());
+pub async fn handle_add_command() {
 
-            let result = json!(vector).to_string();
-            let vec: Vec<f32> = from_str(&*result).unwrap();
-            println!("{:?}", vec);
-
-            stream.try_write(result.as_bytes()).unwrap();
-        },
-        Err(e) => {
-            eprintln!("Error: {}", e);
-        }
-    }
 }
-#[derive(Serialize, Deserialize, Debug)]
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
 enum Command {
     Add (String),
     GetByPath (String, u16),
@@ -70,9 +50,7 @@ async fn main() {
     // load embeddings
 
     let mut _embeddings = Embedding::new();
-    //_embeddings.get_embeddings("/Users/bogdankoval/Downloads/glove.6B/glove.6B.50d.txt");
-
-    let embeddings = Arc::new(_embeddings);
+    _embeddings.get_embeddings("/Users/bogdankoval/Downloads/glove.6B/glove.6B.50d.txt");
 
     let _task_list: VecDeque<Command> = VecDeque::new();
     let task_list = Arc::new(Mutex::new(_task_list));
@@ -85,15 +63,33 @@ async fn main() {
 
     tokio::spawn({
         let mut task_list = task_list.clone();
-
         async move{
             loop {
                 let mut task_list_clone = task_list.lock().await;
                 if !task_list_clone.is_empty() {
-//                    std::mem::drop(task_list_clone);
-                    println!("Doing command {:?}", task_list_clone.pop_front().unwrap());
-                } else {
+                    let command = task_list_clone.pop_front().unwrap();
                     std::mem::drop(task_list_clone);
+                    match command {
+                        Command::Add(path) => {
+                            let mut request = MyRequest::new("4d7bd39a70c249eebd19f5b8d62f5d7b", vec!["tags", "caption"]);
+                            request.set_img(&*path).unwrap();
+                            let response = request.send_request().await.unwrap();
+                            let response_copy = response.json::<Value>().await.unwrap();
+                            let response_struct: Result<MyResponse, Infallible> = MyResponse::try_from(response_copy.clone());
+
+
+                            println!("Adding, then sending");
+                            // send to db service
+                        },
+                        Command::GetByPath(sentence, top) => {
+                            todo!("get top top from se")
+                        },
+                        _ => {
+                            println!("Not the right service");
+                        }
+                    }
+                    println!("Doing command {:?}", command);
+                } else {
                     println!("There are no tasks aviable at the moment");
                     tokio::time::sleep(Duration::from_secs(3)).await;
                 }
@@ -102,28 +98,32 @@ async fn main() {
     });
 
     loop {
+        println!("wating for data");
         let (stream, _) =  listener.accept().await.unwrap();
-        println!("Connection started");
         stream.readable().await.unwrap();
+        println!("Connection started");
         match stream.try_read(&mut buffer) {
             Ok(0) => {
                 println!("There is no data to read!!!");
-            }
+                break;
+            },
             Ok(buffer_size) => {
 
-                //println!("{}", String::from_utf8(buffer[..buffer_size].to_vec()).unwrap());
+                println!("{}", String::from_utf8(buffer[..buffer_size].to_vec()).unwrap());
                 let command: Command = serde_json::from_slice(&buffer[..buffer_size].to_vec()).unwrap();
 
                 let mut task_list_clone = task_list.clone();
                 let mut task_list_clone = task_list_clone.lock().await;
                 task_list_clone.push_back(command);
                 println!("Added");
-            }
+            },
             Err(_) => {
-                println!("Error while reading!!!!")
+                println!("Error while reading!!!!");
+                break;
             }
         }
     }
+    println!("Crash");
 
 
     todo!("Block threads, after finishing")

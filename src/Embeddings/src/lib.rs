@@ -9,6 +9,12 @@ pub struct Embedding {
     Embeddings: Embeddings<SimpleVocab, NdArray>,
 }
 
+pub enum RequestType {
+    Caption(String),
+    Labels(Vec<String>),
+    Full { caption: String, labels: Vec<String> }
+}
+
 impl Embedding {
     pub fn new() -> Self {
         Embedding {
@@ -36,9 +42,9 @@ impl Embedding {
         tokens = tokens.to_lowercase();
         tokens.split_whitespace().map(|s| s.to_string()).collect()
     }
-    pub fn average_vector(&self, sentence: &str) -> Vec<f32> {
+    pub fn average_vector(&self, sentence: String) -> Vec<f32> {
         //println!("Sentence: {:?}", sentence);
-        let words: Vec<String> = Self::prepare_text(sentence);
+        let words: Vec<String> = Self::prepare_text(&*sentence);
         //println!("After split: {:?}", words);
         let mut vector = vec![0.0; self.Embeddings.dims()];
         let mut count = 0;
@@ -73,7 +79,7 @@ impl Embedding {
         dot_product / (magnitude1 * magnitude2)
     }
 
-    pub fn semantic_vector(&mut self, phrases: Vec<&str>) -> Vec<f32> {
+    pub fn semantic_vector(&mut self, phrases: Vec<String>) -> Vec<f32> {
         let mut sum_vector = vec![0.0; self.Embeddings.dims()];
         let mut count = 0;
 
@@ -92,7 +98,22 @@ impl Embedding {
         sum_vector
     }
 
-    pub fn similarity_string(&mut self, phrase1: &str, phrase2: &str) -> f32 {
+    pub fn main_vector(&mut self, request: RequestType) -> Vec<f32>{
+        match request {
+            RequestType::Caption(caption) => {
+                self.average_vector(caption);
+            }
+            RequestType::Labels(labels) => {
+                self.semantic_vector(labels)
+            }
+            RequestType::Full {caption, labels } => {
+                // Change to formula from Anton code!
+                self.semantic_vector(labels)
+            }
+        }
+    }
+
+    pub fn similarity_string(&mut self, phrase1: String, phrase2: String) -> f32 {
         let vector1 = self.average_vector(phrase1);
         let vector2 = self.average_vector(phrase2);
 
