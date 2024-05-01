@@ -3,11 +3,12 @@ use std::sync::Arc;
 use Embeddings::*;
 use std::io::{ErrorKind, Read, Write};
 use tokio::net::{TcpListener, TcpStream};
-use serde_json::{from_str, json, Value};
+use serde_json::{from_str, json, to_string, Value};
 use std::collections::VecDeque;
 use std::convert::Infallible;
 use std::time::Duration;
 use serde::{Deserialize, Serialize};
+use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
 use AzureApi::{MyRequest, MyResponse};
 
@@ -22,6 +23,10 @@ impl Address {
             ip,
             port
         }
+    }
+
+    async fn stream(&self) -> TcpStream {
+        TcpStream::connect(format!("{}:{}", self.ip, self.port)).await.unwrap()
     }
 
     async fn listener(&self) -> Result<TcpListener, Box<dyn Error>> {
@@ -41,8 +46,16 @@ pub async fn handle_add_command() {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 enum Command {
-    Add (String),
-    GetByPath (String, u16),
+    Add(String),
+    AddToDb(String),
+    FromSentence(String),
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+enum CommandSend {
+    Add (String, Vec<f32>),
+    IsExist(String),
+    FromSentence(String),
 }
 
 #[tokio::main]
@@ -62,7 +75,9 @@ async fn main() {
     let mut buffer = [0; 512];
 
     tokio::spawn({
+        //TODO catch panics
         let mut task_list = task_list.clone();
+        let address_db = Address::new(7879, "127.0.0.1".to_string());
         async move{
             loop {
                 let mut task_list_clone = task_list.lock().await;
@@ -71,24 +86,57 @@ async fn main() {
                     std::mem::drop(task_list_clone);
                     match command {
                         Command::Add(path) => {
+                            let command = CommandSend::IsExist(path);
+                            let command = to_string(&command).unwrap();
+                            let command = command.as_bytes();
+
+                            let mut stream = address_db.stream().await;
+                            stream.writable().await.unwrap();
+                            println!("writable");
+                            stream.write_all(command).await.unwrap();
+                            println!("command has been send");
+                        },
+                        Command::FromSentence(sentence) => {
+                            //TODO modify, correctly transform sentence
+                            let request_em = RequestType::Caption(sentence);
+                            let semantic_vector = _embeddings.main_vector(request_em);
+                            println!("Semantic vector: {:?}", semantic_vector);
+                            println!("Task: send to main service");
+                            //send to main
+                        },
+                        Command::AddToDb(path) => {
+                            //TODO: modify this. Do not fully work.
+                            println!("Adding, then sending");
+                            // create a request to azure
                             let mut request = MyRequest::new("4d7bd39a70c249eebd19f5b8d62f5d7b", vec!["tags", "caption"]);
                             request.set_img(&*path).unwrap();
                             let response = request.send_request().await.unwrap();
                             let response_copy = response.json::<Value>().await.unwrap();
-                            let response_struct: Result<MyResponse, Infallible> = MyResponse::try_from(response_copy.clone());
+                            let mut response_struct: Result<MyResponse, Infallible> = MyResponse::try_from(response_copy.clone());
+                            let request_em = RequestType::Caption(response_struct.unwrap().caption);
 
+                            //createa  semantic vector
+                            let semantic_vector = _embeddings.main_vector(request_em);
+                            println!("Semantic vector: {:?}", semantic_vector);
 
-                            println!("Adding, then sending");
-                            // send to db service
-                        },
-                        Command::GetByPath(sentence, top) => {
-                            todo!("get top top from se")
-                        },
+                            //sending to db
+                            println!("Sending request to db");
+                            let command: CommandSend = CommandSend::Add(path, semantic_vector);
+                            let command = to_string(&command).unwrap();
+                            let command = command.as_bytes();
+
+                            let mut stream = address_db.stream().await;
+                            stream.writable().await.unwrap();
+                            println!("writable");
+                            stream.write_all(command).await.unwrap();
+                            println!("command has been send");
+                            println!("Task: send to db service");
+                        }
                         _ => {
                             println!("Not the right service");
                         }
                     }
-                    println!("Doing command {:?}", command);
+                    //println!("Doing command {:?}", command);
                 } else {
                     println!("There are no tasks aviable at the moment");
                     tokio::time::sleep(Duration::from_secs(3)).await;

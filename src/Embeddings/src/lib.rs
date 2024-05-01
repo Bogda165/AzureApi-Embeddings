@@ -101,7 +101,7 @@ impl Embedding {
     pub fn main_vector(&mut self, request: RequestType) -> Vec<f32>{
         match request {
             RequestType::Caption(caption) => {
-                self.average_vector(caption);
+                self.average_vector(caption)
             }
             RequestType::Labels(labels) => {
                 self.semantic_vector(labels)
